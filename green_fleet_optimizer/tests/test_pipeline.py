@@ -62,3 +62,12 @@ def test_sa_finds_brute_force_optimum_on_tiny_problem(result):
     sa = q.solve(sweeps=400, restarts=3, seed=0)
     assert sa["energy"] == pytest.approx(best, rel=1e-9)
     assert np.isfinite(best)
+
+
+def test_qubo_accepts_arrow_backed_strings(result):
+    """pandas 3 stores text as Arrow arrays; building the QUBO must not rely on .values."""
+    opts = result["options"].copy()
+    for col in ["order_id", "vessel_id", "destination"]:
+        opts[col] = opts[col].astype("string[pyarrow]")
+    q = FleetQUBO(opts)
+    assert q.n == len(opts) + opts.order_id.nunique()

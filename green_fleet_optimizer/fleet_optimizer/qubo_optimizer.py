@@ -39,7 +39,7 @@ class FleetQUBO:
         linear[:n_opt] = cost
         self.unserved_cost = {}
         for k, oid in enumerate(self.orders):
-            members = np.flatnonzero(self.options.order_id.values == oid)
+            members = np.flatnonzero(self.options.order_id.to_numpy(dtype=object) == oid)
             slack = n_opt + k
             worst = cost[members].max() if len(members) else cost.max()
             linear[slack] = unserved_multiplier * worst
@@ -56,10 +56,12 @@ class FleetQUBO:
             Q[g, g] -= 2 * self.A              # diag gets A (from x_i^2) - 2A (linear) = -A
             self.constant += self.A
 
-        vessel = self.options.vessel_id.values
-        order = self.options.order_id.values
-        dest = self.options.destination.values
-        eta = self.options.eta_hr.values
+        # Explicit NumPy object arrays: pandas 3 stores strings as Arrow arrays, which do
+        # not support the [:, None] broadcasting below.
+        vessel = self.options.vessel_id.to_numpy(dtype=object)
+        order = self.options.order_id.to_numpy(dtype=object)
+        dest = self.options.destination.to_numpy(dtype=object)
+        eta = self.options.eta_hr.to_numpy(dtype=float)
         diff_order = order[:, None] != order[None, :]
         clash = diff_order & (vessel[:, None] == vessel[None, :])
         congest = diff_order & ~clash & (dest[:, None] == dest[None, :]) & \
