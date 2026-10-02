@@ -3,7 +3,8 @@
 import numpy as np
 import pandas as pd
 from sklearn.compose import TransformedTargetRegressor
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.inspection import permutation_importance
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -21,14 +22,16 @@ except ImportError:  # optional dependency
 def candidate_models(seed=42):
     models = {
         "Ridge (linear baseline)": make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
-        "Random Forest": RandomForestRegressor(n_estimators=250, min_samples_leaf=2, n_jobs=-1,
-                                               random_state=seed),
-        "Gradient Boosting": GradientBoostingRegressor(n_estimators=400, learning_rate=0.05,
-                                                       max_depth=4, subsample=0.9, random_state=seed),
+        # Kept small and single-threaded so the app stays within shared-CPU hosting limits.
+        "Random Forest": RandomForestRegressor(n_estimators=60, min_samples_leaf=2, max_samples=0.6,
+                                               max_features=0.6, n_jobs=1, random_state=seed),
+        "Gradient Boosting": HistGradientBoostingRegressor(max_iter=400, learning_rate=0.08,
+                                                           max_leaf_nodes=31, random_state=seed),
     }
     if XGBRegressor is not None:
-        models["XGBoost"] = XGBRegressor(n_estimators=500, learning_rate=0.05, max_depth=5,
-                                         subsample=0.9, colsample_bytree=0.9, random_state=seed)
+        models["XGBoost"] = XGBRegressor(n_estimators=300, learning_rate=0.08, max_depth=5,
+                                         subsample=0.9, colsample_bytree=0.9, n_jobs=1,
+                                         random_state=seed)
     # Fuel spans two orders of magnitude, so learn it in log space.
     return {name: TransformedTargetRegressor(m, func=np.log1p, inverse_func=np.expm1)
             for name, m in models.items()}
@@ -65,22 +68,22 @@ class FleetPredictor:
         self.fuel_model, best_pred = fitted[self.fuel_model_name]
         self.test_frame = pd.DataFrame({"actual_fuel_t": y_te, "predicted_fuel_t": best_pred,
                                         "vessel_type": h_te["vessel_type"].values})
+        # Model-agnostic importance, computed once on a small held-out sample.
+        sample = min(300, len(X_te))
+        pi = permutation_importance(self.fuel_model, X_te.iloc[:sample], y_te[:sample],
+                                    n_repeats=2, random_state=self.seed, n_jobs=1)
+        self.importance = pd.Series(np.maximum(pi.importances_mean, 0), index=FEATURES)
 
-        self.delay_model = GradientBoostingRegressor(n_estimators=250, max_depth=3,
-                                                     learning_rate=0.05, random_state=self.seed)
+        self.delay_model = HistGradientBoostingRegressor(max_iter=200, max_depth=3,
+                                                         learning_rate=0.05, random_state=self.seed)
         self.delay_model.fit(X_tr, h_tr["delay_hr"])
         self.delay_residuals = np.sort(h_te["delay_hr"].values - self.delay_model.predict(X_te))
         self.delay_mae = mean_absolute_error(h_te["delay_hr"], self.delay_model.predict(X_te))
         return self
 
     def feature_importance(self) -> pd.Series:
-        reg = self.fuel_model.regressor_
-        est = reg[-1] if hasattr(reg, "steps") else reg
-        if hasattr(est, "feature_importances_"):
-            vals = est.feature_importances_
-        else:
-            vals = np.abs(est.coef_)
-        return pd.Series(vals, index=FEATURES).sort_values(ascending=False)
+        """Permutation importance: drop in R2 when a feature is shuffled."""
+        return self.importance.sort_values(ascending=False)
 
     def predict(self, voyages: pd.DataFrame) -> pd.DataFrame:
         """voyages needs vessel spec columns + speed_kn, load_frac, distance_nm and weather.

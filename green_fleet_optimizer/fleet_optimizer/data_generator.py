@@ -156,14 +156,17 @@ def generate_history(rng, fleet, n=3000):
 def make_dataset(seed=42, n_orders=10, n_history=3000, missing_rate=0.02):
     rng = np.random.default_rng(seed)
     fleet = generate_fleet(rng)
+    # History uses its own stream so it (and the trained models) depend only on the seed,
+    # not on how many orders are drawn.
+    hist_rng = np.random.default_rng([seed, 1])
     orders = generate_orders(rng, fleet, n_orders)
     weather = generate_weather(rng, orders)
-    history = generate_history(rng, fleet, n_history)
+    history = generate_history(hist_rng, fleet, n_history)
     # Inject realistic noise for the preprocessing stage to clean.
     for col in ["wind_kn", "wave_m", "current_kn"]:
-        mask = rng.random(len(history)) < missing_rate
+        mask = hist_rng.random(len(history)) < missing_rate
         history.loc[mask, col] = np.nan
-    outliers = rng.choice(len(history), size=max(1, n_history // 200), replace=False)
+    outliers = hist_rng.choice(len(history), size=max(1, n_history // 200), replace=False)
     history.loc[outliers, "fuel_t"] *= 8  # sensor/entry errors
     return {"fleet": fleet, "orders": orders, "weather": weather, "history": history,
             "distances": distance_matrix()}

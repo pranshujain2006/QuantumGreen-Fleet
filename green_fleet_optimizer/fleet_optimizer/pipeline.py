@@ -29,11 +29,17 @@ def plan_kpis(name, result, qubo):
     }
 
 
-def train(seed=DEFAULTS["seed"], n_orders=10):
-    data = make_dataset(seed=seed, n_orders=n_orders)
-    clean, prep_report = clean_history(data["history"])
+def train_models(seed=DEFAULTS["seed"]):
+    """Preprocess history and fit the ML models. Depends only on the seed."""
+    history = make_dataset(seed=seed)["history"]
+    clean, prep_report = clean_history(history)
     predictor = FleetPredictor(seed=seed).fit(clean)
-    return data, clean, prep_report, predictor
+    return clean, prep_report, predictor
+
+
+def train(seed=DEFAULTS["seed"], n_orders=10):
+    clean, prep_report, predictor = train_models(seed)
+    return make_dataset(seed=seed, n_orders=n_orders), clean, prep_report, predictor
 
 
 def optimise(data, predictor, carbon_price=DEFAULTS["carbon_price"],

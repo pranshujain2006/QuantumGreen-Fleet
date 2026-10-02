@@ -1,0 +1,8 @@
+# Streamlit Community Cloud reads this from the repository root.
+[server]
+# No file watching in production: polling the source tree costs CPU on shared hosts.
+fileWatcherType = "none"
+runOnSave = false
+
+[browser]
+gatherUsageStats = false

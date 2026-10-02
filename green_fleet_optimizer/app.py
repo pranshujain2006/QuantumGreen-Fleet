@@ -1,17 +1,24 @@
 """QuantumGreen Fleet - interactive dashboard.   Run:  streamlit run app.py"""
 
 import io
+import os
+
+# Shared hosting (e.g. Streamlit Community Cloud) gives ~1 vCPU; multi-threaded BLAS/OpenMP
+# oversubscribes it and triggers CPU throttling. Must be set before numpy/sklearn import.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from fleet_optimizer.config import DEFAULTS, FUELS, SPEED_LEVELS
+from fleet_optimizer.config import DEFAULTS, FUELS
 from fleet_optimizer.data_generator import PORT_HANDLING_HR
 from fleet_optimizer.green_fuel import (evaluate_fuels_for_voyage, fleet_fuel_scenarios,
                                         shore_power_comparison)
-from fleet_optimizer.pipeline import optimise, train
+from fleet_optimizer.data_generator import make_dataset
+from fleet_optimizer.pipeline import optimise, train_models
 from fleet_optimizer.preprocessing import FEATURES
 
 st.set_page_config(page_title="QuantumGreen Fleet", page_icon="🚢", layout="wide")
@@ -37,26 +44,36 @@ def show(fig):
     st.plotly_chart(fig, width="stretch", theme="streamlit")
 
 
-@st.cache_resource(show_spinner="Generating data and training ML models ...")
-def get_trained(seed, n_orders):
-    return train(seed, n_orders)
+# App defaults are lighter than the library defaults to stay within hosted CPU limits.
+APP_SWEEPS, APP_RESTARTS = 600, 3
 
 
-@st.cache_resource(show_spinner="Building QUBO and running simulated annealing ...", max_entries=8)
+@st.cache_resource(show_spinner="Training ML models (once per scenario seed) ...", max_entries=3)
+def get_models(seed):
+    return train_models(seed)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def get_scenario(seed, n_orders):
+    return make_dataset(seed=seed, n_orders=n_orders)
+
+
+@st.cache_resource(show_spinner="Building QUBO and running simulated annealing ...", max_entries=6)
 def get_optimised(seed, n_orders, carbon_price, emission_weight, late_penalty,
                   window, cong_cost, sweeps, restarts, hybrid):
-    data, _, _, predictor = get_trained(seed, n_orders)
-    return optimise(data, predictor, carbon_price=carbon_price, emission_weight=emission_weight,
-                    late_penalty=late_penalty, congestion_window_hr=window,
-                    congestion_cost=cong_cost, sweeps=sweeps, restarts=restarts, seed=seed,
-                    hybrid=hybrid)
+    _, _, predictor = get_models(seed)
+    return optimise(get_scenario(seed, n_orders), predictor, carbon_price=carbon_price,
+                    emission_weight=emission_weight, late_penalty=late_penalty,
+                    congestion_window_hr=window, congestion_cost=cong_cost, sweeps=sweeps,
+                    restarts=restarts, seed=seed, hybrid=hybrid)
 
 
 # ---------------------------------------------------------------- sidebar
-with st.sidebar:
+# A form, so dragging a slider does not re-run the optimiser; it runs on "Run optimisation".
+with st.sidebar.form("settings"):
     st.header("⚙️ Scenario")
     seed = st.number_input("Scenario seed", 0, 9999, DEFAULTS["seed"],
-                           help="Regenerates fleet, cargo orders and weather")
+                           help="Regenerates fleet, cargo orders and weather (retrains the ML models)")
     n_orders = st.slider("Cargo orders", 4, 16, 10)
     st.header("🌍 Economics & policy")
     carbon_price = st.slider("Carbon price ($/tCO₂e)", 0, 400, int(DEFAULTS["carbon_price"]), 10)
@@ -68,17 +85,18 @@ with st.sidebar:
     window = st.slider("Berth window (h)", 0, 72, DEFAULTS["congestion_window_hr"])
     cong_cost = st.slider("Waiting cost per clash ($)", 0, 300000, DEFAULTS["congestion_cost"], 5000)
     st.header("⚛️ Simulated annealing")
-    sweeps = st.slider("Sweeps per restart", 100, 5000, DEFAULTS["sa_sweeps"], 100)
-    restarts = st.slider("Restarts", 1, 10, DEFAULTS["sa_restarts"])
+    sweeps = st.slider("Sweeps per restart", 100, 3000, APP_SWEEPS, 100)
+    restarts = st.slider("Restarts", 1, 6, APP_RESTARTS)
     hybrid = st.toggle("Hybrid warm start", True,
                        help="First restart starts from the classical assignment solution")
+    st.form_submit_button("▶️ Run optimisation", type="primary", width="stretch")
 
-data, clean, prep_report, predictor = get_trained(seed, n_orders)
+clean, prep_report, predictor = get_models(seed)
+data = get_scenario(seed, n_orders)
 res = get_optimised(seed, n_orders, float(carbon_price), float(emission_weight), float(late_penalty),
                     float(window), float(cong_cost), sweeps, restarts, hybrid)
 kpis = res["kpis"].set_index("method")
 plan = res["sa"]["plan"].sort_values("order_id")
-bau_plan = res["bau"]["plan"]
 qubo = res["qubo"]
 
 st.title("🚢 QuantumGreen Fleet")
