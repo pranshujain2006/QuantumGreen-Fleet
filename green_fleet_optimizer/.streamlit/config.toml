@@ -1,7 +1,7 @@
 # Streamlit Community Cloud reads this from the repository root.
+# Note: keep the file watcher enabled (default). With fileWatcherType = "none", a git push
+# updates the files but the running app keeps the old modules in memory until a reboot.
 [server]
-# No file watching in production: polling the source tree costs CPU on shared hosts.
-fileWatcherType = "none"
 runOnSave = false
 
 [browser]
